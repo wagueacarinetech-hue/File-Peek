@@ -44,7 +44,7 @@ std::string extractDocument(const std::string& filename)
 
     if (!pipe)
     {
-        return "";
+        return "ERROR: Could not start extractor.";
     }
 
     std::string result;
@@ -59,7 +59,12 @@ std::string extractDocument(const std::string& filename)
 
     if (exitCode != 0)
     {
-        return "";
+        if (result.empty())
+        {
+            return "ERROR: Document extraction failed.";
+        }
+
+        return result;
     }
 
     return result;
@@ -93,7 +98,7 @@ std::string getCachePath(
         ".txt";
 }
 
-// check if we already summarized this version
+// check if this summary already exists
 std::string readCache(
     const std::string& filename,
     const std::string& mode)
@@ -109,7 +114,7 @@ std::string readCache(
     return readFile(cachePath);
 }
 
-// save the summary for next time
+// save summary for next time
 void saveCache(
     const std::string& filename,
     const std::string& mode,
@@ -126,7 +131,7 @@ void saveCache(
     }
 }
 
-// send the text to the summarizer
+// send text to nemotron
 std::string summarizeText(
     const std::string& text,
     const std::string& mode)
@@ -168,11 +173,16 @@ std::string summarizeText(
 
     int exitCode = _pclose(pipe);
 
-    // we dont need this file anymore
+    // dont keep temp file
     std::filesystem::remove(tempFile);
 
     if (exitCode != 0)
     {
+        if (summary.empty())
+        {
+            return "ERROR: Summarization failed.";
+        }
+
         return summary;
     }
 
@@ -216,9 +226,14 @@ std::string classifyFile(const std::string& extension)
     return "UNKNOWN";
 }
 
+bool isError(const std::string& message)
+{
+    return message.rfind("ERROR:", 0) == 0;
+}
+
 int main()
 {
-    // fixes weird characters in the console
+    // fixes weird characters
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 
@@ -231,7 +246,7 @@ int main()
 
     if (!std::filesystem::exists(filePath))
     {
-        std::cout << "File does not exist." << std::endl;
+        std::cout << "\nFilePeek could not find that file." << std::endl;
         return 1;
     }
 
@@ -287,6 +302,12 @@ int main()
         return 0;
     }
 
+    if (choice != "1" && choice != "2")
+    {
+        std::cout << "\nInvalid choice." << std::endl;
+        return 1;
+    }
+
     std::string mode;
 
     if (choice == "2")
@@ -298,7 +319,6 @@ int main()
         mode = "quick";
     }
 
-    // try the saved summary first
     std::string summary =
         readCache(filename, mode);
 
@@ -313,6 +333,15 @@ int main()
         if (category == "TEXT")
         {
             contents = readFile(filename);
+
+            if (contents.empty())
+            {
+                std::cout
+                    << "\nFilePeek could not read this text file."
+                    << std::endl;
+
+                return 1;
+            }
         }
         else if (category == "DOCUMENT")
         {
@@ -321,15 +350,25 @@ int main()
                 << std::endl;
 
             contents = extractDocument(filename);
-        }
 
-        if (contents.empty())
-        {
-            std::cout
-                << "Could not get text from the file."
-                << std::endl;
+            if (isError(contents))
+            {
+                std::cout
+                    << "\nFilePeek could not extract the document.\n"
+                    << contents
+                    << std::endl;
 
-            return 1;
+                return 1;
+            }
+
+            if (contents.empty())
+            {
+                std::cout
+                    << "\nThe document did not contain readable text."
+                    << std::endl;
+
+                return 1;
+            }
         }
 
         std::cout
@@ -340,17 +379,23 @@ int main()
 
         summary = summarizeText(contents, mode);
 
-        // dont save errors
-        if (summary.rfind("ERROR:", 0) != 0)
+        if (isError(summary))
         {
-            saveCache(filename, mode, summary);
+            std::cout
+                << "\nFilePeek could not generate a summary.\n"
+                << summary
+                << std::endl;
+
+            return 1;
         }
+
+        saveCache(filename, mode, summary);
     }
 
     std::cout << "\n--- FilePeek Summary ---\n";
     std::cout << summary << std::endl;
 
-    // quick summary can be expanded if wanted
+    // quick can be expanded
     if (mode == "quick")
     {
         std::cout
@@ -388,10 +433,20 @@ int main()
                         extractDocument(filename);
                 }
 
+                if (isError(contents))
+                {
+                    std::cout
+                        << "\nFilePeek could not extract the document.\n"
+                        << contents
+                        << std::endl;
+
+                    return 1;
+                }
+
                 if (contents.empty())
                 {
                     std::cout
-                        << "Could not get text from the file."
+                        << "\nCould not get text from this file."
                         << std::endl;
 
                     return 1;
@@ -404,14 +459,21 @@ int main()
                 detailedSummary =
                     summarizeText(contents, "detailed");
 
-                if (detailedSummary.rfind("ERROR:", 0) != 0)
+                if (isError(detailedSummary))
                 {
-                    saveCache(
-                        filename,
-                        "detailed",
-                        detailedSummary
-                    );
+                    std::cout
+                        << "\nFilePeek could not generate a detailed summary.\n"
+                        << detailedSummary
+                        << std::endl;
+
+                    return 1;
                 }
+
+                saveCache(
+                    filename,
+                    "detailed",
+                    detailedSummary
+                );
             }
 
             std::cout
