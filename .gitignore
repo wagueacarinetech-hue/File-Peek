@@ -2,3 +2,5 @@
 x64/
 *.user
 *.suo
+.filepeek_cache/
+filepeek_temp.txt
