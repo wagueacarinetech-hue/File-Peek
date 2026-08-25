@@ -1,11 +1,10 @@
-#include <windows.h>
+#include "ExplorerDetector.h"
 #include <UIAutomation.h>
-#include <string>
 
 #pragma comment(lib, "uiautomationcore.lib")
 
 
-// try to get a useful name from one element
+// get the name from one UI element
 std::wstring GetElementName(
     IUIAutomationElement* element)
 {
@@ -32,14 +31,16 @@ std::wstring GetElementName(
 }
 
 
-// move up until we find the explorer row/item
-std::wstring GetHoveredExplorerItemName()
+// get the file row under the mouse
+ExplorerItemInfo GetHoveredExplorerItem()
 {
+    ExplorerItemInfo info;
+
     POINT mouse;
 
     if (!GetCursorPos(&mouse))
     {
-        return L"";
+        return info;
     }
 
 
@@ -55,7 +56,7 @@ std::wstring GetHoveredExplorerItemName()
 
     if (FAILED(result) || !automation)
     {
-        return L"";
+        return info;
     }
 
 
@@ -71,7 +72,7 @@ std::wstring GetHoveredExplorerItemName()
     {
         automation->Release();
 
-        return L"";
+        return info;
     }
 
 
@@ -87,7 +88,7 @@ std::wstring GetHoveredExplorerItemName()
         element->Release();
         automation->Release();
 
-        return L"";
+        return info;
     }
 
 
@@ -96,10 +97,7 @@ std::wstring GetHoveredExplorerItemName()
     current->AddRef();
 
 
-    std::wstring itemName;
-
-
-    // walk up through parents
+    // move upward until we reach the whole file row
     for (int level = 0; level < 8; level++)
     {
         CONTROLTYPEID controlType = 0;
@@ -109,15 +107,27 @@ std::wstring GetHoveredExplorerItemName()
         );
 
 
-        // explorer items are often DataItem or ListItem
         if (controlType == UIA_DataItemControlTypeId ||
             controlType == UIA_ListItemControlTypeId)
         {
-            itemName =
+            std::wstring name =
                 GetElementName(current);
 
-            if (!itemName.empty())
+            RECT bounds = {};
+
+            HRESULT boundsResult =
+                current->get_CurrentBoundingRectangle(
+                    &bounds
+                );
+
+
+            if (!name.empty() &&
+                SUCCEEDED(boundsResult))
             {
+                info.name = name;
+                info.bounds = bounds;
+                info.found = true;
+
                 break;
             }
         }
@@ -144,13 +154,10 @@ std::wstring GetHoveredExplorerItemName()
 
 
     current->Release();
-
     walker->Release();
-
     element->Release();
-
     automation->Release();
 
 
-    return itemName;
+    return info;
 }

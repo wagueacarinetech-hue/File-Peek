@@ -1,24 +1,310 @@
 #include <windows.h>
 #include <wrl.h>
 #include <string>
+
 #include "WebView2.h"
+#include "ExplorerDetector.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
 
-// comes from ExplorerDetector.cpp
-std::wstring GetHoveredExplorerItemName();
+// Window handles
+HWND hiddenWindow = nullptr;
+HWND triggerWindow = nullptr;
+HWND menuWindow = nullptr;
 
 
-HWND mainWindow = nullptr;
-
+// WebView state
 ComPtr<ICoreWebView2Controller> controller;
 ComPtr<ICoreWebView2> webview;
 
 
-// resize webview with the window
-LRESULT CALLBACK WindowProc(
+// Current Explorer item
+RECT lastFileBounds = {};
+
+bool haveFile = false;
+bool menuOpen = false;
+
+ULONGLONG lastFileSeenTime = 0;
+
+std::wstring hoveredFileName;
+
+
+// Check whether the cursor is inside one of our windows
+bool MouseInsideWindow(HWND window)
+{
+    if (!window ||
+        !IsWindowVisible(window))
+    {
+        return false;
+    }
+
+    POINT mouse;
+
+    if (!GetCursorPos(&mouse))
+    {
+        return false;
+    }
+
+    RECT bounds;
+
+    if (!GetWindowRect(
+        window,
+        &bounds))
+    {
+        return false;
+    }
+
+    return PtInRect(
+        &bounds,
+        mouse
+    );
+}
+
+
+// Position the trigger next to the hovered row
+void ShowTrigger(
+    const RECT& fileBounds)
+{
+    const int size = 24;
+    const int gap = 6;
+
+    int x =
+        fileBounds.right + gap;
+
+    int y =
+        fileBounds.top +
+        ((fileBounds.bottom - fileBounds.top) / 2) -
+        (size / 2);
+
+
+    SetWindowPos(
+        triggerWindow,
+        HWND_TOPMOST,
+        x,
+        y,
+        size,
+        size,
+        SWP_SHOWWINDOW |
+        SWP_NOACTIVATE
+    );
+}
+
+
+void HideTrigger()
+{
+    ShowWindow(
+        triggerWindow,
+        SW_HIDE
+    );
+}
+
+
+// Position the menu next to the trigger
+void ShowMenu()
+{
+    RECT triggerBounds;
+
+    if (!GetWindowRect(
+        triggerWindow,
+        &triggerBounds))
+    {
+        return;
+    }
+
+
+    const int width = 640;
+    const int height = 220;
+    const int gap = 4;
+
+
+    int x =
+        triggerBounds.right + gap;
+
+    int y =
+        triggerBounds.top - 45;
+
+
+    int screenWidth =
+        GetSystemMetrics(
+            SM_CXSCREEN
+        );
+
+    int screenHeight =
+        GetSystemMetrics(
+            SM_CYSCREEN
+        );
+
+
+    if (x + width > screenWidth)
+    {
+        x =
+            triggerBounds.left -
+            width -
+            gap;
+    }
+
+
+    if (y < 0)
+    {
+        y = 0;
+    }
+
+
+    if (y + height > screenHeight)
+    {
+        y =
+            screenHeight -
+            height;
+    }
+
+
+    SetWindowPos(
+        menuWindow,
+        HWND_TOPMOST,
+        x,
+        y,
+        width,
+        height,
+        SWP_SHOWWINDOW |
+        SWP_NOACTIVATE
+    );
+
+
+    menuOpen = true;
+
+
+    if (controller)
+    {
+        RECT bounds;
+
+        GetClientRect(
+            menuWindow,
+            &bounds
+        );
+
+
+        controller->put_Bounds(
+            bounds
+        );
+
+
+        controller->put_IsVisible(
+            TRUE
+        );
+    }
+}
+
+
+void HideMenu()
+{
+    if (controller)
+    {
+        controller->put_IsVisible(
+            FALSE
+        );
+    }
+
+
+    ShowWindow(
+        menuWindow,
+        SW_HIDE
+    );
+
+
+    menuOpen = false;
+}
+
+
+// Reset the current hover state
+void HideFilePeek()
+{
+    HideTrigger();
+
+    HideMenu();
+
+
+    haveFile = false;
+
+    hoveredFileName.clear();
+}
+
+
+// Draw the green trigger
+LRESULT CALLBACK TriggerProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+
+
+        HDC hdc =
+            BeginPaint(
+                hwnd,
+                &ps
+            );
+
+
+        RECT rect;
+
+
+        GetClientRect(
+            hwnd,
+            &rect
+        );
+
+
+        HBRUSH brush =
+            CreateSolidBrush(
+                RGB(
+                    34,
+                    160,
+                    107
+                )
+            );
+
+
+        FillRect(
+            hdc,
+            &rect,
+            brush
+        );
+
+
+        DeleteObject(
+            brush
+        );
+
+
+        EndPaint(
+            hwnd,
+            &ps
+        );
+
+
+        return 0;
+    }
+    }
+
+
+    return DefWindowProcW(
+        hwnd,
+        message,
+        wParam,
+        lParam
+    );
+}
+
+
+// Keep WebView sized to the host window
+LRESULT CALLBACK MenuProc(
     HWND hwnd,
     UINT message,
     WPARAM wParam,
@@ -32,33 +318,139 @@ LRESULT CALLBACK WindowProc(
         {
             RECT bounds;
 
+
             GetClientRect(
                 hwnd,
                 &bounds
             );
+
 
             controller->put_Bounds(
                 bounds
             );
         }
 
+
         return 0;
     }
 
 
-    // check what is under the mouse
+    case WM_ERASEBKGND:
+    {
+        return 1;
+    }
+    }
+
+
+    return DefWindowProcW(
+        hwnd,
+        message,
+        wParam,
+        lParam
+    );
+}
+
+
+// Poll Explorer and update the FilePeek UI
+LRESULT CALLBACK HiddenProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    switch (message)
+    {
     case WM_TIMER:
     {
-        std::wstring hoveredName =
-            GetHoveredExplorerItemName();
-
-        if (!hoveredName.empty())
-        {
-            SetWindowTextW(
-                hwnd,
-                hoveredName.c_str()
+        bool onTrigger =
+            MouseInsideWindow(
+                triggerWindow
             );
+
+
+        bool onMenu =
+            MouseInsideWindow(
+                menuWindow
+            );
+
+
+        // Open the menu when the cursor reaches the trigger
+        if (onTrigger)
+        {
+            if (!menuOpen)
+            {
+                ShowMenu();
+            }
+
+
+            return 0;
         }
+
+
+        // Keep the menu open while the cursor is inside it
+        if (onMenu)
+        {
+            return 0;
+        }
+
+
+        ExplorerItemInfo item =
+            GetHoveredExplorerItem();
+
+
+        if (item.found)
+        {
+            lastFileBounds =
+                item.bounds;
+
+
+            hoveredFileName =
+                item.name;
+
+
+            lastFileSeenTime =
+                GetTickCount64();
+
+
+            haveFile = true;
+
+
+            if (menuOpen)
+            {
+                HideMenu();
+            }
+
+
+            ShowTrigger(
+                lastFileBounds
+            );
+
+
+            return 0;
+        }
+
+
+        // Give the cursor time to move from the row to the trigger
+        if (haveFile)
+        {
+            ULONGLONG now =
+                GetTickCount64();
+
+
+            ULONGLONG elapsed =
+                now -
+                lastFileSeenTime;
+
+
+            if (elapsed < 450)
+            {
+                return 0;
+            }
+        }
+
+
+        HideFilePeek();
+
 
         return 0;
     }
@@ -71,7 +463,11 @@ LRESULT CALLBACK WindowProc(
             1
         );
 
-        PostQuitMessage(0);
+
+        PostQuitMessage(
+            0
+        );
+
 
         return 0;
     }
@@ -93,109 +489,219 @@ int WINAPI wWinMain(
     _In_ PWSTR commandLine,
     _In_ int showCommand)
 {
-    // UI Automation needs COM
-    HRESULT comResult = CoInitializeEx(
-        nullptr,
-        COINIT_APARTMENTTHREADED
-    );
+    HRESULT comResult =
+        CoInitializeEx(
+            nullptr,
+            COINIT_APARTMENTTHREADED
+        );
 
 
-    const wchar_t CLASS_NAME[] =
-        L"FilePeekWebView";
+    const wchar_t HIDDEN_CLASS[] =
+        L"FilePeekHidden";
 
 
-    WNDCLASSW windowClass = {};
+    WNDCLASSW hiddenClass = {};
 
 
-    windowClass.lpfnWndProc =
-        WindowProc;
+    hiddenClass.lpfnWndProc =
+        HiddenProc;
 
 
-    windowClass.hInstance =
+    hiddenClass.hInstance =
         instance;
 
 
-    windowClass.lpszClassName =
-        CLASS_NAME;
+    hiddenClass.lpszClassName =
+        HIDDEN_CLASS;
 
 
-    windowClass.hCursor =
+    RegisterClassW(
+        &hiddenClass
+    );
+
+
+    const wchar_t TRIGGER_CLASS[] =
+        L"FilePeekTrigger";
+
+
+    WNDCLASSW triggerClass = {};
+
+
+    triggerClass.lpfnWndProc =
+        TriggerProc;
+
+
+    triggerClass.hInstance =
+        instance;
+
+
+    triggerClass.lpszClassName =
+        TRIGGER_CLASS;
+
+
+    triggerClass.hCursor =
+        LoadCursor(
+            nullptr,
+            IDC_HAND
+        );
+
+
+    RegisterClassW(
+        &triggerClass
+    );
+
+
+    const wchar_t MENU_CLASS[] =
+        L"FilePeekMenu";
+
+
+    WNDCLASSW menuClass = {};
+
+
+    menuClass.lpfnWndProc =
+        MenuProc;
+
+
+    menuClass.hInstance =
+        instance;
+
+
+    menuClass.lpszClassName =
+        MENU_CLASS;
+
+
+    menuClass.hCursor =
         LoadCursor(
             nullptr,
             IDC_ARROW
         );
 
 
-    windowClass.hbrBackground =
-        (HBRUSH)(COLOR_WINDOW + 1);
+    menuClass.hbrBackground =
+        (HBRUSH)GetStockObject(
+            NULL_BRUSH
+        );
 
 
-    if (!RegisterClassW(&windowClass))
-    {
-        if (SUCCEEDED(comResult))
-        {
-            CoUninitialize();
-        }
-
-        return 0;
-    }
-
-
-    mainWindow = CreateWindowExW(
-        WS_EX_TOPMOST |
-        WS_EX_TOOLWINDOW,
-
-        CLASS_NAME,
-
-        L"FilePeek",
-
-        WS_OVERLAPPEDWINDOW,
-
-        350,
-        250,
-
-        720,
-        420,
-
-        nullptr,
-        nullptr,
-        instance,
-        nullptr
+    RegisterClassW(
+        &menuClass
     );
 
 
-    if (!mainWindow)
+    hiddenWindow =
+        CreateWindowExW(
+            0,
+
+            HIDDEN_CLASS,
+
+            L"",
+
+            0,
+
+            0,
+            0,
+            0,
+            0,
+
+            nullptr,
+            nullptr,
+            instance,
+            nullptr
+        );
+
+
+    triggerWindow =
+        CreateWindowExW(
+            WS_EX_TOPMOST |
+            WS_EX_TOOLWINDOW |
+            WS_EX_NOACTIVATE,
+
+            TRIGGER_CLASS,
+
+            L"",
+
+            WS_POPUP,
+
+            0,
+            0,
+            24,
+            24,
+
+            nullptr,
+            nullptr,
+            instance,
+            nullptr
+        );
+
+
+    menuWindow =
+        CreateWindowExW(
+            WS_EX_TOPMOST |
+            WS_EX_TOOLWINDOW |
+            WS_EX_NOACTIVATE,
+
+            MENU_CLASS,
+
+            L"",
+
+            WS_POPUP,
+
+            0,
+            0,
+            640,
+            220,
+
+            nullptr,
+            nullptr,
+            instance,
+            nullptr
+        );
+
+
+    if (!hiddenWindow ||
+        !triggerWindow ||
+        !menuWindow)
     {
         if (SUCCEEDED(comResult))
         {
             CoUninitialize();
         }
 
+
         return 0;
     }
+
+
+    // Make the trigger circular
+    HRGN circle =
+        CreateEllipticRgn(
+            0,
+            0,
+            24,
+            24
+        );
+
+
+    SetWindowRgn(
+        triggerWindow,
+        circle,
+        TRUE
+    );
 
 
     ShowWindow(
-        mainWindow,
-        showCommand
+        triggerWindow,
+        SW_HIDE
     );
 
 
-    UpdateWindow(
-        mainWindow
+    ShowWindow(
+        menuWindow,
+        SW_HIDE
     );
 
 
-    // check mouse twice each second
-    SetTimer(
-        mainWindow,
-        1,
-        500,
-        nullptr
-    );
-
-
-    // start webview
+    // Initialize WebView2
     CreateCoreWebView2EnvironmentWithOptions(
         nullptr,
         nullptr,
@@ -215,49 +721,83 @@ int WINAPI wWinMain(
                 }
 
 
-                environment->CreateCoreWebView2Controller(
-                    mainWindow,
+                environment->
+                    CreateCoreWebView2Controller(
+                        menuWindow,
 
-                    Callback<
-                    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                        Callback<
+                        ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
 
-                        [](HRESULT result,
-                            ICoreWebView2Controller* createdController)
-                        -> HRESULT
-                        {
-                            if (FAILED(result) ||
-                                !createdController)
+                            [](HRESULT result,
+                                ICoreWebView2Controller* createdController)
+                            -> HRESULT
                             {
-                                return E_FAIL;
-                            }
+                                if (FAILED(result) ||
+                                    !createdController)
+                                {
+                                    return E_FAIL;
+                                }
 
 
-                            controller =
-                                createdController;
+                                controller =
+                                    createdController;
 
 
-                            createdController->get_CoreWebView2(
-                                &webview
-                            );
+                                createdController->
+                                    get_CoreWebView2(
+                                        &webview
+                                    );
 
 
-                            RECT bounds;
+                                RECT bounds;
 
 
-                            GetClientRect(
-                                mainWindow,
-                                &bounds
-                            );
+                                GetClientRect(
+                                    menuWindow,
+                                    &bounds
+                                );
 
 
-                            controller->put_Bounds(
-                                bounds
-                            );
+                                controller->
+                                    put_Bounds(
+                                        bounds
+                                    );
 
 
-                            // filepeek interface
-                            const wchar_t* html =
-                                LR"FILEPEEK(
+                                controller->
+                                    put_IsVisible(
+                                        FALSE
+                                    );
+
+
+                                // Keep the WebView transparent outside the cards
+                                ComPtr<ICoreWebView2Controller2>
+                                    controller2;
+
+
+                                if (SUCCEEDED(
+                                    controller.As(
+                                        &controller2
+                                    )))
+                                {
+                                    COREWEBVIEW2_COLOR transparentColor =
+                                    {
+                                        0,
+                                        0,
+                                        0,
+                                        0
+                                    };
+
+
+                                    controller2->
+                                        put_DefaultBackgroundColor(
+                                            transparentColor
+                                        );
+                                }
+
+
+                                const wchar_t* html =
+                                    LR"FILEPEEK(
 
 <!DOCTYPE html>
 
@@ -280,34 +820,45 @@ int WINAPI wWinMain(
 
     --green-hover: #2CAF78;
 
-    --bubble-background: #FFFFFF;
-
     --main-text: #303633;
 
     --soft-text: #4F5552;
 }
 
 
+html,
 body {
 
     margin: 0;
 
-    padding: 35px;
+    padding: 0;
+
+    width: 100%;
+
+    height: 100%;
 
     font-family:
         "Segoe UI",
         Arial,
         sans-serif;
 
-    background: #F5F6F6;
+    background:
+        transparent;
 
-    overflow: hidden;
+    overflow:
+        hidden;
 }
 
 
-/* green first panel */
+/* Menu */
 
 .filepeek {
+
+    position: absolute;
+
+    left: 4px;
+
+    top: 45px;
 
     width: 245px;
 
@@ -324,7 +875,7 @@ body {
 }
 
 
-/* summary choices */
+/* Menu options */
 
 .option {
 
@@ -362,7 +913,7 @@ body {
 }
 
 
-/* text and arrow */
+/* Arrow */
 
 .option-label {
 
@@ -376,29 +927,21 @@ body {
 
 .arrow {
 
-    font-size: 18px;
+    font-size: 17px;
 
-    font-weight: 600;
+    font-weight: 500;
 
     color:
-        rgba(255, 255, 255, 0.82);
-
-    transition:
-        transform 0.14s ease,
-        color 0.14s ease;
+        rgba(
+            255,
+            255,
+            255,
+            0.82
+        );
 }
 
 
-.option:hover .arrow {
-
-    color: white;
-
-    transform:
-        translateX(2px);
-}
-
-
-/* calm reading bubble */
+/* Summary preview */
 
 .bubble {
 
@@ -416,7 +959,7 @@ body {
         20px;
 
     background:
-        var(--bubble-background);
+        white;
 
     color:
         var(--main-text);
@@ -448,7 +991,7 @@ body {
 }
 
 
-/* message tail */
+/* Preview pointer */
 
 .bubble::before {
 
@@ -478,8 +1021,6 @@ body {
 }
 
 
-/* show bubble */
-
 .option:hover .bubble {
 
     opacity: 1;
@@ -492,7 +1033,7 @@ body {
 }
 
 
-/* calm heading */
+/* Preview title */
 
 .bubble-title {
 
@@ -506,7 +1047,7 @@ body {
 }
 
 
-/* easier reading */
+/* Preview text */
 
 .bubble-text {
 
@@ -540,7 +1081,7 @@ body {
             </span>
 
             <span class="arrow">
-                ›
+                &gt;
             </span>
 
         </div>
@@ -555,8 +1096,8 @@ body {
 
             <div class="bubble-text">
 
-                This file discusses hashing,
-                tries, and algorithm analysis.
+                This is where the real quick
+                summary will appear.
 
             </div>
 
@@ -574,7 +1115,7 @@ body {
             </span>
 
             <span class="arrow">
-                ›
+                &gt;
             </span>
 
         </div>
@@ -589,9 +1130,8 @@ body {
 
             <div class="bubble-text">
 
-                This file covers hash-table probing,
-                modular pairing, trie-based word search,
-                proofs of correctness, and runtime analysis.
+                This is where the real detailed
+                summary will appear.
 
             </div>
 
@@ -610,22 +1150,32 @@ body {
 )FILEPEEK";
 
 
-                            webview->NavigateToString(
-                                html
-                            );
+                                webview->
+                                    NavigateToString(
+                                        html
+                                    );
 
 
-                            return S_OK;
-                        }
+                                return S_OK;
+                            }
 
-                    ).Get()
-                );
+                        ).Get()
+                    );
 
 
                 return S_OK;
             }
 
         ).Get()
+    );
+
+
+    // Poll Explorer often enough to keep the hover transition smooth
+    SetTimer(
+        hiddenWindow,
+        1,
+        50,
+        nullptr
     );
 
 
