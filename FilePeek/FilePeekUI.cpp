@@ -1,9 +1,15 @@
 #include <windows.h>
 #include <wrl.h>
+#include <string>
 #include "WebView2.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
+
+
+// comes from ExplorerDetector.cpp
+std::wstring GetHoveredExplorerItemName();
+
 
 HWND mainWindow = nullptr;
 
@@ -11,7 +17,7 @@ ComPtr<ICoreWebView2Controller> controller;
 ComPtr<ICoreWebView2> webview;
 
 
-// resize webview with window
+// resize webview with the window
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
     UINT message,
@@ -25,20 +31,52 @@ LRESULT CALLBACK WindowProc(
         if (controller)
         {
             RECT bounds;
-            GetClientRect(hwnd, &bounds);
 
-            controller->put_Bounds(bounds);
+            GetClientRect(
+                hwnd,
+                &bounds
+            );
+
+            controller->put_Bounds(
+                bounds
+            );
         }
 
         return 0;
     }
 
+
+    // check what is under the mouse
+    case WM_TIMER:
+    {
+        std::wstring hoveredName =
+            GetHoveredExplorerItemName();
+
+        if (!hoveredName.empty())
+        {
+            SetWindowTextW(
+                hwnd,
+                hoveredName.c_str()
+            );
+        }
+
+        return 0;
+    }
+
+
     case WM_DESTROY:
     {
+        KillTimer(
+            hwnd,
+            1
+        );
+
         PostQuitMessage(0);
+
         return 0;
     }
     }
+
 
     return DefWindowProcW(
         hwnd,
@@ -50,28 +88,43 @@ LRESULT CALLBACK WindowProc(
 
 
 int WINAPI wWinMain(
-    HINSTANCE instance,
-    HINSTANCE,
-    PWSTR,
-    int showCommand)
+    _In_ HINSTANCE instance,
+    _In_opt_ HINSTANCE previousInstance,
+    _In_ PWSTR commandLine,
+    _In_ int showCommand)
 {
+    // UI Automation needs COM
+    HRESULT comResult = CoInitializeEx(
+        nullptr,
+        COINIT_APARTMENTTHREADED
+    );
+
+
     const wchar_t CLASS_NAME[] =
         L"FilePeekWebView";
 
 
     WNDCLASSW windowClass = {};
 
+
     windowClass.lpfnWndProc =
         WindowProc;
+
 
     windowClass.hInstance =
         instance;
 
+
     windowClass.lpszClassName =
         CLASS_NAME;
 
+
     windowClass.hCursor =
-        LoadCursor(nullptr, IDC_ARROW);
+        LoadCursor(
+            nullptr,
+            IDC_ARROW
+        );
+
 
     windowClass.hbrBackground =
         (HBRUSH)(COLOR_WINDOW + 1);
@@ -79,6 +132,11 @@ int WINAPI wWinMain(
 
     if (!RegisterClassW(&windowClass))
     {
+        if (SUCCEEDED(comResult))
+        {
+            CoUninitialize();
+        }
+
         return 0;
     }
 
@@ -108,6 +166,11 @@ int WINAPI wWinMain(
 
     if (!mainWindow)
     {
+        if (SUCCEEDED(comResult))
+        {
+            CoUninitialize();
+        }
+
         return 0;
     }
 
@@ -117,7 +180,19 @@ int WINAPI wWinMain(
         showCommand
     );
 
-    UpdateWindow(mainWindow);
+
+    UpdateWindow(
+        mainWindow
+    );
+
+
+    // check mouse twice each second
+    SetTimer(
+        mainWindow,
+        1,
+        500,
+        nullptr
+    );
 
 
     // start webview
@@ -167,6 +242,7 @@ int WINAPI wWinMain(
 
 
                             RECT bounds;
+
 
                             GetClientRect(
                                 mainWindow,
@@ -278,8 +354,6 @@ body {
     margin-top: 3px;
 }
 
-
-/* lighter green hover */
 
 .option:hover {
 
@@ -404,7 +478,7 @@ body {
 }
 
 
-/* show message */
+/* show bubble */
 
 .option:hover .bubble {
 
@@ -457,8 +531,6 @@ body {
 <div class="filepeek">
 
 
-    <!-- quick summary -->
-
     <div class="option">
 
         <div class="option-label">
@@ -492,8 +564,6 @@ body {
 
     </div>
 
-
-    <!-- detailed summary -->
 
     <div class="option">
 
@@ -559,7 +629,6 @@ body {
     );
 
 
-    // message loop
     MSG message = {};
 
 
@@ -573,9 +642,16 @@ body {
             &message
         );
 
+
         DispatchMessageW(
             &message
         );
+    }
+
+
+    if (SUCCEEDED(comResult))
+    {
+        CoUninitialize();
     }
 
 
