@@ -4,3 +4,4 @@ x64/
 *.suo
 .filepeek_cache/
 filepeek_temp.txt
+packages/
