@@ -1,7 +1,35 @@
-﻿.vs/
+﻿# Visual Studio
+.vs/
+Debug/
+Release/
 x64/
-*.user
-*.suo
-.filepeek_cache/
-filepeek_temp.txt
+x86/
 packages/
+*.obj
+*.pdb
+*.ilk
+*.tlog
+*.log
+*.lastbuildstate
+*.vcxproj.user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# FilePeek runtime cache
+.filepeek_cache/
+
+# Temporary files
+extracted_test.txt
+*.tmp
+
+# Secrets
+.env
+.env.*
+*.key
+
+# OS files
+Thumbs.db
+.DS_Store

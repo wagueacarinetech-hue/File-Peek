@@ -6,7 +6,8 @@
 struct ExplorerItemInfo
 {
     std::wstring name;
-    RECT bounds;
+    std::wstring path;
+    RECT bounds = {};
     bool found = false;
 };
 
