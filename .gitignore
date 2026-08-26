@@ -33,3 +33,11 @@ extracted_test.txt
 # OS files
 Thumbs.db
 .DS_Store
+
+# PyInstaller
+FilePeek/build/
+FilePeek/dist/
+FilePeek/*.spec
+
+# Visual Studio generated resources
+FilePeek/*.aps

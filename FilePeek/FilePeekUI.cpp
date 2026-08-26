@@ -297,43 +297,79 @@ void ShowSummary(
 }
 
 
+std::wstring GetExecutableDirectory()
+{
+    wchar_t buffer[MAX_PATH] = {};
+
+    DWORD length = GetModuleFileNameW(
+        nullptr,
+        buffer,
+        MAX_PATH
+    );
+
+    if (length == 0 || length >= MAX_PATH)
+    {
+        return L"";
+    }
+
+    std::wstring path(buffer, length);
+
+    size_t lastSlash = path.find_last_of(L"\\/");
+
+    if (lastSlash == std::wstring::npos)
+    {
+        return L"";
+    }
+
+    return path.substr(0, lastSlash);
+}
+
+
+std::wstring GetBackendPath()
+{
+    std::wstring directory = GetExecutableDirectory();
+
+    if (directory.empty())
+    {
+        return L"FilePeekBackend.exe";
+    }
+
+    return directory + L"\\FilePeekBackend.exe";
+}
+
+
 SummaryResult RunBackend(
     const std::wstring& filePath,
     const std::wstring& mode,
     const std::wstring& cacheKey)
 {
-    ULONGLONG totalStart =
-        GetTickCount64();
+    ULONGLONG totalStart = GetTickCount64();
 
     SummaryResult result;
+    result.path = filePath;
+    result.mode = mode;
+    result.cacheKey = cacheKey;
 
-    result.path =
-        filePath;
+    const std::wstring backendPath = GetBackendPath();
 
-    result.mode =
-        mode;
+    if (GetFileAttributesW(backendPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        result.text = L"FilePeekBackend.exe was not found next to FilePeek.exe.";
 
-    result.cacheKey =
-        cacheKey;
+        LogPerformance(
+            mode + L" backend failed",
+            GetTickCount64() - totalStart
+        );
 
-    const std::wstring pythonPath =
-        L"C:\\Users\\nguec\\AppData\\Local\\Python\\bin\\python.exe";
-
-    const std::wstring backendPath =
-        L"C:\\Users\\nguec\\File-Peek\\FilePeek\\backend.py";
+        return result;
+    }
 
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
 
     SECURITY_ATTRIBUTES security = {};
-
-    security.nLength =
-        sizeof(
-            SECURITY_ATTRIBUTES
-            );
-
-    security.bInheritHandle =
-        TRUE;
+    security.nLength = sizeof(SECURITY_ATTRIBUTES);
+    security.bInheritHandle = TRUE;
 
     if (!CreatePipe(
         &readPipe,
@@ -341,13 +377,11 @@ SummaryResult RunBackend(
         &security,
         0))
     {
-        result.text =
-            L"Could not create the FilePeek backend connection.";
+        result.text = L"Could not create the FilePeek backend connection.";
 
         LogPerformance(
             mode + L" backend failed",
-            GetTickCount64() -
-            totalStart
+            GetTickCount64() - totalStart
         );
 
         return result;
@@ -360,32 +394,16 @@ SummaryResult RunBackend(
     );
 
     STARTUPINFOW startup = {};
-
-    startup.cb =
-        sizeof(
-            STARTUPINFOW
-            );
-
-    startup.dwFlags =
-        STARTF_USESTDHANDLES;
-
-    startup.hStdOutput =
-        writePipe;
-
-    startup.hStdError =
-        writePipe;
-
-    startup.hStdInput =
-        GetStdHandle(
-            STD_INPUT_HANDLE
-        );
+    startup.cb = sizeof(STARTUPINFOW);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = writePipe;
+    startup.hStdError = writePipe;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
 
     PROCESS_INFORMATION process = {};
 
     std::wstring command =
         L"\"" +
-        pythonPath +
-        L"\" \"" +
         backendPath +
         L"\" \"" +
         filePath +
@@ -397,50 +415,39 @@ SummaryResult RunBackend(
         command.end()
     );
 
-    commandBuffer.push_back(
-        L'\0'
+    commandBuffer.push_back(L'\0');
+
+    BOOL started = CreateProcessW(
+        backendPath.c_str(),
+        commandBuffer.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startup,
+        &process
     );
 
-    BOOL started =
-        CreateProcessW(
-            pythonPath.c_str(),
-            commandBuffer.data(),
-            nullptr,
-            nullptr,
-            TRUE,
-            CREATE_NO_WINDOW,
-            nullptr,
-            nullptr,
-            &startup,
-            &process
-        );
-
-    CloseHandle(
-        writePipe
-    );
+    CloseHandle(writePipe);
 
     if (!started)
     {
-        CloseHandle(
-            readPipe
-        );
+        CloseHandle(readPipe);
 
-        result.text =
-            L"FilePeek could not start the Python backend.";
+        result.text = L"FilePeek could not start FilePeekBackend.exe.";
 
         LogPerformance(
             mode + L" backend failed",
-            GetTickCount64() -
-            totalStart
+            GetTickCount64() - totalStart
         );
 
         return result;
     }
 
     std::string output;
-
     char buffer[4096];
-
     DWORD bytesRead = 0;
 
     while (ReadFile(
@@ -455,10 +462,7 @@ SummaryResult RunBackend(
             break;
         }
 
-        output.append(
-            buffer,
-            bytesRead
-        );
+        output.append(buffer, bytesRead);
     }
 
     WaitForSingleObject(
@@ -473,63 +477,39 @@ SummaryResult RunBackend(
         &exitCode
     );
 
-    CloseHandle(
-        process.hThread
-    );
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    CloseHandle(readPipe);
 
-    CloseHandle(
-        process.hProcess
-    );
-
-    CloseHandle(
-        readPipe
-    );
-
-    std::wstring converted =
-        Utf8ToWide(
-            output
-        );
+    std::wstring converted = Utf8ToWide(output);
 
     while (!converted.empty() &&
-        (
-            converted.back() == L'\r' ||
-            converted.back() == L'\n'
-            ))
+        (converted.back() == L'\r' ||
+            converted.back() == L'\n'))
     {
         converted.pop_back();
     }
 
     LogPerformance(
         mode + L" backend",
-        GetTickCount64() -
-        totalStart
+        GetTickCount64() - totalStart
     );
 
     if (converted.empty())
     {
-        result.text =
-            L"The backend returned no text.";
-
+        result.text = L"The backend returned no text.";
         return result;
     }
 
     if (exitCode != 0 ||
-        converted.rfind(
-            L"ERROR:",
-            0
-        ) == 0)
+        converted.rfind(L"ERROR:", 0) == 0)
     {
-        result.text =
-            converted;
-
+        result.text = converted;
         return result;
     }
 
-    result.text =
-        converted;
-
-    result.success =
-        true;
+    result.text = converted;
+    result.success = true;
 
     return result;
 }
