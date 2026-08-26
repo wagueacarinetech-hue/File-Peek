@@ -28,9 +28,6 @@ Quick Summary is designed to answer the first question you usually have when loo
 
 Rather than giving a long generic summary, it aims to provide enough context to identify the document at a glance.
 
-For example:
-
-> **Homework 7**, consisting of hash table insertion problems, remainder-based group pairing, and algorithm analysis exercises.
 
 The goal is to help determine whether a file is the one you are looking for without opening and reading through it first.
 
